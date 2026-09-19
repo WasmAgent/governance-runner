@@ -2,9 +2,11 @@
 """Build authority-manifest.json from a WasmAgent/.github checkout.
 
 Operator tool (not used at sweep time): after a LEGITIMATE change to the
-candidate's judge code (".github/workflows/**" or "scripts/**") has been
-reviewed, run this against the reviewed tree and land the updated manifest
-in governance-runner BEFORE merging the candidate change:
+candidate's judge CODE (".github/workflows/**", "scripts/**") or judge
+POLICY/CONFIG ("policies/**", "schemas/**",
+"golden-path/versions.lock.json", "claims/claim-overreach-allowlist.json")
+has been reviewed, run this against the reviewed tree and land the updated
+manifest in governance-runner BEFORE merging the candidate change:
 
     judge code upgrade first -> candidate adoption second
 
@@ -22,8 +24,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-SCHEMA_VERSION = 1
-PREFIXES = (".github/workflows/", "scripts/")
+SCHEMA_VERSION = 2
+PREFIXES = (".github/workflows/", "scripts/", "policies/", "schemas/")
+EXACT_FILES = (
+    "golden-path/versions.lock.json",
+    "claims/claim-overreach-allowlist.json",
+)
 SOURCE_REPOSITORY = "WasmAgent/.github"
 
 
@@ -45,6 +51,11 @@ def build_manifest(tree: Path, source_commit: str) -> dict:
             if path.is_file():
                 rel = path.relative_to(tree).as_posix()
                 files[rel] = sha256_file(path)
+    for rel in EXACT_FILES:
+        path = tree / rel
+        if not path.is_file():
+            raise SystemExit(f"exact authority file missing from source tree: {rel}")
+        files[rel] = sha256_file(path)
     if not files:
         raise SystemExit("authority surface is empty — refusing to build a manifest")
     return {
@@ -53,6 +64,7 @@ def build_manifest(tree: Path, source_commit: str) -> dict:
             "source_repository": SOURCE_REPOSITORY,
             "source_commit": source_commit,
             "prefixes": list(PREFIXES),
+            "exact_files": list(EXACT_FILES),
             "files": files,
         },
     }
