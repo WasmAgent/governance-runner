@@ -41,6 +41,11 @@ jobs:
             --require-hashes \
             -r requirements.txt
 
+      - name: Obtain canonical target git object database (P0c source binding)
+        run: |
+          git clone --filter=blob:none --no-checkout --quiet \
+            https://github.com/WasmAgent/.github "$RUNNER_TEMP/target-github"
+
       - name: Mint repository-scoped GitHub App token
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
@@ -65,4 +70,5 @@ jobs:
           RUNNER_REPOSITORY: ${{ github.repository }}
           RUNNER_SHA: ${{ github.sha }}
           RUN_ID: ${{ github.run_id }}
+          GOVERNANCE_TARGET_CHECKOUT: ${{ runner.temp }}/target-github
         run: python scripts/sweep.py
