@@ -2,12 +2,17 @@
 """Self-test for the vendored out-of-band authority.
 
 Runs on every push/PR of governance-runner (no secrets involved) and proves
-the vendored validators still execute and still enforce their invariants:
+the vendored validators still execute and still enforce their invariants,
+AND that the authority-surface manifest check behaves:
 
   1. a minimal conforming candidate passes BOTH validators;
   2. flipping one claim to the legal status `deprecated` while the fixture
      homepage still asserts "all `supported`" makes validate-public-claims
-     fail with EXACTLY ONE failure — the PC-02b message.
+     fail with EXACTLY ONE failure — the PC-02b message;
+  3. the authority-surface manifest accepts the untouched candidate;
+  4. tampered judge code (workflow hash change) is rejected;
+  5. unmanifested judge code is rejected;
+  6. deleted judge code is rejected.
 
 The fixture is built programmatically so the test cannot drift from the
 validator contract.
@@ -21,6 +26,9 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import sweep  # noqa: E402  (imports clean: env reads happen in main())
 
 CANONICAL_URL = (
     "https://github.com/WasmAgent/.github/blob/main/claims/public-claims.yml"
@@ -49,11 +57,25 @@ CLAIM = """  - id: WA-C-{n}
     recorded: 2026-01-01
 """
 
+WORKFLOW = (
+    "name: fixture workflow\n"
+    "on: push\n"
+    "jobs:\n"
+    "  fixture-job:\n"
+    "    runs-on: ubuntu-latest\n"
+    "    steps:\n"
+    "      - run: echo fixture\n"
+)
+
+JUDGE = "# fixture judge code\n"
+
 
 def build_candidate(root: Path) -> None:
     (root / "claims").mkdir(parents=True)
     (root / "evidence").mkdir()
     (root / "profile").mkdir()
+    (root / ".github" / "workflows").mkdir(parents=True)
+    (root / "scripts").mkdir()
 
     claims = "# fixture claims\nschema_version: 1\norg: WasmAgent\nlast_reviewed: 2026-01-01\nclaims:\n"
     claims += CLAIM.format(n="0001") + CLAIM.format(n="0002")
@@ -72,6 +94,9 @@ def build_candidate(root: Path) -> None:
         f"[`public-claims.yml`]({CANONICAL_URL})\n"
     )
     (root / "profile" / "README.md").write_text(readme)
+
+    (root / ".github" / "workflows" / "fixture.yml").write_text(WORKFLOW)
+    (root / "scripts" / "judge.py").write_text(JUDGE)
 
 
 def flip_one_claim(root: Path) -> None:
@@ -121,6 +146,36 @@ def main() -> int:
             print(f"FAIL expected exactly one PC-02b failure, got:\n{out}")
             return 1
         print("PASS mutated fixture held with exactly one PC-02b failure")
+
+        # --- authority-surface manifest behaviour ---
+        manifest = sweep.build_manifest(root, "fixture")
+
+        problems = sweep.verify_authority_surface(root, manifest)
+        if problems:
+            print(f"FAIL untouched fixture must match its own manifest:\n{problems}")
+            return 1
+        print("PASS authority surface: untouched candidate accepted")
+
+        (root / ".github" / "workflows" / "fixture.yml").write_text(WORKFLOW.replace("echo fixture", "run: true"))
+        problems = sweep.verify_authority_surface(root, manifest)
+        if not any("differs from manifest" in p and ".github/workflows/fixture.yml" in p for p in problems):
+            print(f"FAIL tampered judge code not detected:\n{problems}")
+            return 1
+        print("PASS authority surface: tampered workflow rejected")
+
+        (root / "scripts" / "extra.py").write_text("# unmanifested\n")
+        problems = sweep.verify_authority_surface(root, manifest)
+        if not any("unmanifested authority file: scripts/extra.py" in p for p in problems):
+            print(f"FAIL unmanifested judge code not detected:\n{problems}")
+            return 1
+        print("PASS authority surface: unmanifested judge code rejected")
+
+        (root / "scripts" / "judge.py").unlink()
+        problems = sweep.verify_authority_surface(root, manifest)
+        if not any("missing authority file: scripts/judge.py" in p for p in problems):
+            print(f"FAIL deleted judge code not detected:\n{problems}")
+            return 1
+        print("PASS authority surface: deleted judge code rejected")
 
     return 0
 
