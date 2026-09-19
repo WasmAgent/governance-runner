@@ -1,5 +1,9 @@
 {
   "authority_surface": {
+    "exact_files": [
+      "golden-path/versions.lock.json",
+      "claims/claim-overreach-allowlist.json"
+    ],
     "files": {
       ".github/workflows/docs-ci.yml": "sha256:b9ef83865341bb975687584ee79bbcfea7e585df637cde67f758975b31cb24b8",
       ".github/workflows/external-evidence-ci.yml": "sha256:f9bec11fe17400e1ae71a0a19cc5bdb58c4bba40d40dfeb06eef99429232e653",
@@ -12,6 +16,12 @@
       ".github/workflows/project-index-ci.yml": "sha256:b491a5eacfe80964ce69f58753126aa4d95cd6f3bead77d9ff3a672f4651e447",
       ".github/workflows/public-claims-ci.yml": "sha256:1cd9c1ec7a3b842ed6f93101e30bdebb93fc34b919fb579aa7d43d9c2f4dba3b",
       ".github/workflows/reusable-compat-check.yml": "sha256:4a39501efac97e6328127cc2a2d5e952313707cb01dfcfea3db45d8bf9ff085b",
+      "claims/claim-overreach-allowlist.json": "sha256:ecb9b5655b9eec08dc2701fe94fbf00a2662b67e6223d42710ea0d8fb2483d33",
+      "golden-path/versions.lock.json": "sha256:84a166cd3a6855fee527671b19a37003b62988debd937539f02929afd5ac4b55",
+      "policies/repository-assurance.yml": "sha256:616ef8d5da405aedff7c6d678410b74a731321ca38cca2a03653f81880bd7d40",
+      "policies/repository-ownership.yml": "sha256:ce4bb550672ee17072968d81b2b922af085c88885d18286b8e1c68d9b300cbaf",
+      "schemas/external-outbound-preflight.schema.json": "sha256:1ccade624d34979ab61cf7c702f904fa6f54bb11345ffc453fd4b0ec5b6c1978",
+      "schemas/external-validation.schema.json": "sha256:37e9543d2374d4afa7f24050ca8036fb33c8d65e140199647906262e69c4f64e",
       "scripts/check-repository-assurance.py": "sha256:c263a1ea253debfe2a36c2aa976e20f699621a8b4ec2f7bf8139e0aa941eafa9",
       "scripts/check-repository-ownership.py": "sha256:8a4c811b6b2af797b18a87520bd59af030a1c74ed9bc91436af7278471fe15b9",
       "scripts/external-outbound-preflight-core.mjs": "sha256:e537eaa59aea6526758c9fae31732685a7de2be19d20001286f22829f9a46f25",
@@ -48,10 +58,12 @@
     },
     "prefixes": [
       ".github/workflows/",
-      "scripts/"
+      "scripts/",
+      "policies/",
+      "schemas/"
     ],
-    "source_commit": "6edea17d60aa98cb01aab24cb71808b051109cbb",
+    "source_commit": "da2f5e1649dbc740b1bb0bb33034c476e9063c09",
     "source_repository": "WasmAgent/.github"
   },
-  "schema_version": 1
+  "schema_version": 2
 }

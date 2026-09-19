@@ -26,20 +26,29 @@ requirements.txt                        hash-locked validator dependencies
 ## Trust boundary
 
 ```text
-owner account (telleroutlook) + governance-runner/main + App private key
+WasmAgent organization owners
++ governance-runner admins (2026-09-19: telleroutlook, tellerlin, HainingYin)
++ App private key (single secret, stored only here)
         = the judge
 candidate PR content = the judged (data only)
 ```
 
-## Authority surface manifest
+Mirrors the trust assumptions in
+`WasmAgent/.github/docs/adr/ADR-governance-root-authority.md`.
 
-`authority-manifest.json` pins the SHA-256 of every file in the candidate's
-judge code (`.github/workflows/**` and `scripts/**`) at an accepted
-`WasmAgent/.github` revision. Before any claim/evidence validation, the
-sweeper verifies the candidate's authority surface against the manifest:
-tampered, deleted, or unmanifested judge code ⇒ `governance-root-authority`
-= HOLD. This closes the "self-neutering workflow" hole: a candidate can no
-longer weaken its own required checks and still pass the root check.
+## Authority surface manifest (code + policy/config closure)
+
+`authority-manifest.json` (schema v2) pins the SHA-256 of the candidate's
+judge CODE (`.github/workflows/**`, `scripts/**`) AND its judge
+POLICY/CONFIG dependency closure (`policies/**`, `schemas/**`,
+`golden-path/versions.lock.json`, `claims/claim-overreach-allowlist.json`)
+at an accepted `WasmAgent/.github` revision. Before any claim/evidence
+validation, the sweeper verifies the candidate's authority surface against
+the manifest: tampered, deleted, or unmanifested authority files ⇒
+`governance-root-authority` = HOLD. This closes both the "self-neutering
+workflow" hole and the "weaken the policy the checker reads" hole
+(e.g. `runtime_source_extensions: []`), while ordinary governed data
+(`docs/`, `claims/`, `evidence/`, `profile/`) remains free to change.
 
 ### Judge-code upgrade runbook (two-phase, pin-first)
 

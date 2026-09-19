@@ -10,9 +10,12 @@ check run as the governance GitHub App.
 Security properties:
   - never executes candidate shell, workflows, or Python
   - never imports candidate code; validators come from this repository
-  - candidate cannot alter the judge code its PR is judged with:
-    ".github/workflows/**" and "scripts/**" must hash-match
-    authority-manifest.json (two-phase upgrade: manifest first, candidate second)
+  - candidate cannot alter the judge CODE its PR is judged with
+    (".github/workflows/**", "scripts/**") NOR the judge POLICY/CONFIG
+    dependency closure ("policies/**", "schemas/**",
+    "golden-path/versions.lock.json", "claims/claim-overreach-allowlist.json"):
+    everything must hash-match authority-manifest.json (two-phase upgrade:
+    manifest first, candidate second)
   - the App token held here can only read the candidate and write checks
   - infrastructure failures publish a failure check (fail closed)
 """
@@ -72,10 +75,19 @@ def sha256_file(path: Path) -> str:
     return f"sha256:{digest.hexdigest()}"
 
 
-MANIFEST_PREFIXES = (".github/workflows/", "scripts/")
+MANIFEST_PREFIXES = (".github/workflows/", "scripts/", "policies/", "schemas/")
+MANIFEST_EXACT_FILES = (
+    "golden-path/versions.lock.json",
+    "claims/claim-overreach-allowlist.json",
+)
 
 
-def build_manifest(tree: Path, source_commit: str, prefixes: tuple[str, ...] = MANIFEST_PREFIXES) -> dict:
+def build_manifest(
+    tree: Path,
+    source_commit: str,
+    prefixes: tuple[str, ...] = MANIFEST_PREFIXES,
+    exact_files: tuple[str, ...] = MANIFEST_EXACT_FILES,
+) -> dict:
     """Same contract as scripts/build-manifest.py — shared by the self-test."""
     files: dict[str, str] = {}
     for prefix in prefixes:
@@ -84,10 +96,16 @@ def build_manifest(tree: Path, source_commit: str, prefixes: tuple[str, ...] = M
             if path.is_file():
                 rel = path.relative_to(tree).as_posix()
                 files[rel] = sha256_file(path)
+    for rel in exact_files:
+        path = tree / rel
+        if not path.is_file():
+            raise SystemExit(f"exact authority file missing from source tree: {rel}")
+        files[rel] = sha256_file(path)
     return {
         "authority_surface": {
             "source_commit": source_commit,
             "prefixes": list(prefixes),
+            "exact_files": list(exact_files),
             "files": files,
         }
     }
@@ -117,12 +135,13 @@ def verify_authority_surface(candidate: Path, manifest: dict) -> list[str]:
                 seen.add(rel)
 
     for path in sorted(expected):
-        if path not in seen:
+        f = candidate / path
+        if not f.is_file():
             problems.append(f"missing authority file: {path}")
-        elif sha256_file(candidate / path) != expected[path]:
+        elif sha256_file(f) != expected[path]:
             problems.append(
                 f"authority file differs from manifest: {path} "
-                f"(expected {expected[path][:19]}…, got {sha256_file(candidate / path)[:19]}…)"
+                f"(expected {expected[path][:19]}…, got {sha256_file(f)[:19]}…)"
             )
 
     for rel in sorted(seen):

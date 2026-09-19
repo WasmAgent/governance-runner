@@ -10,9 +10,13 @@ AND that the authority-surface manifest check behaves:
      homepage still asserts "all `supported`" makes validate-public-claims
      fail with EXACTLY ONE failure — the PC-02b message;
   3. the authority-surface manifest accepts the untouched candidate;
-  4. tampered judge code (workflow hash change) is rejected;
+  4. tampered judge CODE (workflow hash change) is rejected;
   5. unmanifested judge code is rejected;
-  6. deleted judge code is rejected.
+  6. deleted judge code is rejected;
+  7. tampered judge POLICY (policies/*.yml) is rejected;
+  8. tampered normative SCHEMA (schemas/*.json) is rejected;
+  9. tampered pinned exact file (golden-path/versions.lock.json) is rejected;
+ 10. ordinary governed data (docs/, claims/) may still change freely.
 
 The fixture is built programmatically so the test cannot drift from the
 validator contract.
@@ -98,6 +102,19 @@ def build_candidate(root: Path) -> None:
     (root / ".github" / "workflows" / "fixture.yml").write_text(WORKFLOW)
     (root / "scripts" / "judge.py").write_text(JUDGE)
 
+    # judge policy/config dependency closure (manifest v2)
+    (root / "policies").mkdir()
+    (root / "schemas").mkdir()
+    (root / "golden-path").mkdir()
+    (root / "policies" / "repository-ownership.yml").write_text(
+        "runtime_source_extensions:\n  - .py\n"
+    )
+    (root / "policies" / "repository-assurance.yml").write_text("repo_classes: []\n")
+    (root / "schemas" / "external-validation.schema.json").write_text("{}\n")
+    (root / "schemas" / "external-outbound-preflight.schema.json").write_text("{}\n")
+    (root / "golden-path" / "versions.lock.json").write_text("{}\n")
+    (root / "claims" / "claim-overreach-allowlist.json").write_text('{"allowlist": []}\n')
+
 
 def flip_one_claim(root: Path) -> None:
     path = root / "claims" / "public-claims.yml"
@@ -147,7 +164,7 @@ def main() -> int:
             return 1
         print("PASS mutated fixture held with exactly one PC-02b failure")
 
-        # --- authority-surface manifest behaviour ---
+        # --- authority-surface manifest behaviour (code + policy/config closure) ---
         manifest = sweep.build_manifest(root, "fixture")
 
         problems = sweep.verify_authority_surface(root, manifest)
@@ -155,6 +172,16 @@ def main() -> int:
             print(f"FAIL untouched fixture must match its own manifest:\n{problems}")
             return 1
         print("PASS authority surface: untouched candidate accepted")
+
+        (root / "docs").mkdir()
+        (root / "docs" / "ordinary-note.md").write_text("ordinary governed data\n")
+        claims = root / "claims" / "public-claims.yml"
+        claims.write_text(claims.read_text() + CLAIM.format(n="0003").replace("status: supported", "status: supported"))
+        problems = sweep.verify_authority_surface(root, manifest)
+        if problems:
+            print(f"FAIL ordinary governed data must change freely:\n{problems}")
+            return 1
+        print("PASS authority surface: ordinary governed data still allowed")
 
         (root / ".github" / "workflows" / "fixture.yml").write_text(WORKFLOW.replace("echo fixture", "run: true"))
         problems = sweep.verify_authority_surface(root, manifest)
@@ -176,6 +203,29 @@ def main() -> int:
             print(f"FAIL deleted judge code not detected:\n{problems}")
             return 1
         print("PASS authority surface: deleted judge code rejected")
+
+        (root / "policies" / "repository-ownership.yml").write_text(
+            "runtime_source_extensions: []\n"
+        )
+        problems = sweep.verify_authority_surface(root, manifest)
+        if not any("differs from manifest" in p and "policies/repository-ownership.yml" in p for p in problems):
+            print(f"FAIL tampered judge policy not detected:\n{problems}")
+            return 1
+        print("PASS authority surface: tampered policy rejected")
+
+        (root / "schemas" / "external-validation.schema.json").write_text('{"weakened": true}\n')
+        problems = sweep.verify_authority_surface(root, manifest)
+        if not any("differs from manifest" in p and "schemas/external-validation.schema.json" in p for p in problems):
+            print(f"FAIL tampered normative schema not detected:\n{problems}")
+            return 1
+        print("PASS authority surface: tampered schema rejected")
+
+        (root / "golden-path" / "versions.lock.json").write_text('{"tampered": true}\n')
+        problems = sweep.verify_authority_surface(root, manifest)
+        if not any("differs from manifest" in p and "golden-path/versions.lock.json" in p for p in problems):
+            print(f"FAIL tampered exact authority file not detected:\n{problems}")
+            return 1
+        print("PASS authority surface: tampered versions.lock rejected")
 
     return 0
 
