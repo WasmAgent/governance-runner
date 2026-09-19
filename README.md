@@ -87,12 +87,18 @@ governance-root-authority/<runner-main-commit-sha>
 
 Any runner change (validators, sweeper, manifest, workflow) automatically
 changes the emitted context name: a green verdict produced by an older
-authority can never satisfy the new epoch. The one manual step per upgrade
-is the protection flip in `WasmAgent/.github` main protection — replace
+authority can never satisfy the new epoch. The workflow checks out exactly
+the event SHA (`ref: github.sha`) and asserts `HEAD == GITHUB_SHA`, so the
+epoch context names the tree that actually executed — the
+checkout/epoch TOCTOU (main advancing between event and checkout) is
+closed by construction. The one manual step per upgrade is the protection
+flip in `WasmAgent/.github` main protection — replace
 `governance-root-authority/<old-runner-sha>` with
 `governance-root-authority/<new-runner-sha>` (both app_id-bound to the
 Governance App) after the runner PR merges and before relying on the new
-authority.
+authority. (A failed target-DB clone before the sweeper runs also fails
+closed: the required context stays missing, so PRs cannot merge — it
+presents as a pending/missing check rather than a visible HOLD.)
 
 At sweep start the runner ALSO enforces the production source binding: it
 clones the canonical `WasmAgent/.github` git object database (workflow
