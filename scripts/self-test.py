@@ -280,6 +280,54 @@ def main() -> int:
         return 1
     print("PASS contract: fully-dropped exact file rejected (outside surface)")
 
+    # --- source binding (P0c closure): checked-in manifest ≡ H(source_commit tree).
+    # The .github checkout comes from GOVERNANCE_TARGET_CHECKOUT (local) or a
+    # blob-less clone; only its git object database is read.
+    import os
+    repo_path = os.environ.get("GOVERNANCE_TARGET_CHECKOUT")
+    if repo_path:
+        target_repo = Path(repo_path)
+    else:
+        target_repo = Path(tmp) / "target"
+        clone = subprocess.run(
+            ["git", "clone", "--filter=blob:none", "--no-checkout", "--quiet",
+             "https://github.com/WasmAgent/.github", str(target_repo)],
+            capture_output=True, text=True, timeout=120,
+        )
+        if clone.returncode != 0:
+            print(f"SKIP source binding: cannot clone target ({clone.stderr.strip()[:120]})")
+            return 0
+        # default clone carries main history; ensure the pinned commit exists
+        sha = real["authority_surface"]["source_commit"]
+        if subprocess.run(["git", "-C", str(target_repo), "cat-file", "-e", f"{sha}^{{commit}}"],
+                          capture_output=True).returncode != 0:
+            fetch = subprocess.run(["git", "-C", str(target_repo), "fetch", "--quiet",
+                                    "origin", sha], capture_output=True, text=True)
+            if fetch.returncode != 0:
+                print(f"SKIP source binding: pinned commit unreachable ({fetch.stderr.strip()[:120]})")
+                return 0
+
+    problems = sweep.verify_manifest_source_binding(real, target_repo)
+    if problems:
+        print(f"FAIL checked-in manifest is not bound to its source_commit:\n{problems}")
+        return 1
+    print("PASS source binding: checked-in manifest == H(source_commit tree)")
+
+    mutated = copy.deepcopy(real)
+    mutated["authority_surface"]["files"]["policies/repository-ownership.yml"] = (
+        "sha256:" + "0" * 64
+    )
+    contract_problems = sweep.validate_manifest_contract(mutated)
+    if contract_problems:
+        print(f"FAIL hash-swap fixture must pass the STRUCTURAL contract:\n{contract_problems}")
+        return 1
+    problems = sweep.verify_manifest_source_binding(mutated, target_repo)
+    if not any("hash does not match" in p and "policies/repository-ownership.yml" in p
+               for p in problems):
+        print(f"FAIL structurally-valid hash swap not caught by source binding:\n{problems}")
+        return 1
+    print("PASS source binding: structurally-valid hash swap rejected")
+
     return 0
 
 

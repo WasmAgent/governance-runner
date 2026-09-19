@@ -171,6 +171,86 @@ def validate_manifest_contract(manifest: dict) -> list[str]:
     return problems
 
 
+def build_manifest_from_git(repo: Path, source_commit: str) -> dict:
+    """Canonical manifest for an immutable .github commit tree (P0c).
+
+    Hashes the git tree of source_commit (ls-tree/show) — never a working
+    tree — so the result is by construction bound to source_commit.
+    """
+    def _git(*args: str, binary: bool = False):
+        result = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"git {' '.join(args)} failed: "
+                f"{result.stderr.decode(errors='replace')}"
+            )
+        return result.stdout if binary else result.stdout.decode().strip()
+
+    _git("cat-file", "-e", f"{source_commit}^{{commit}}")
+    listing = _git("ls-tree", "-r", "--name-only", "-z", source_commit, binary=True)
+    tree_paths = [item.decode("utf-8") for item in listing.split(b"\0") if item]
+
+    files: dict[str, str] = {}
+    for prefix in MANIFEST_PREFIXES:
+        matched = sorted(p for p in tree_paths if p.startswith(prefix))
+        if not matched:
+            raise RuntimeError(f"missing authority directory in commit tree: {prefix}")
+        for rel in matched:
+            content = _git("show", f"{source_commit}:{rel}", binary=True)
+            files[rel] = f"sha256:{hashlib.sha256(content).hexdigest()}"
+    for rel in MANIFEST_EXACT_FILES:
+        if rel not in tree_paths:
+            raise RuntimeError(f"exact authority file missing from commit tree: {rel}")
+        content = _git("show", f"{source_commit}:{rel}", binary=True)
+        files[rel] = f"sha256:{hashlib.sha256(content).hexdigest()}"
+
+    return {
+        "schema_version": 2,
+        "authority_surface": {
+            "source_repository": MANIFEST_SOURCE_REPOSITORY,
+            "source_commit": source_commit,
+            "prefixes": list(MANIFEST_PREFIXES),
+            "exact_files": list(MANIFEST_EXACT_FILES),
+            "files": files,
+        }
+    }
+
+
+def verify_manifest_source_binding(manifest: dict, repo: Path) -> list[str]:
+    """P0c closure: the checked-in manifest must equal the canonical manifest
+    rebuilt from its own source_commit's git tree. Structural contract
+    validity alone does not prove the hashes actually pin that commit.
+    """
+    problems: list[str] = []
+    surface = manifest.get("authority_surface") or {}
+    source_commit = surface.get("source_commit") or ""
+    try:
+        canonical = build_manifest_from_git(repo, source_commit)
+    except RuntimeError as error:
+        return [f"source binding unverifiable: {error}"]
+
+    canonical_files = canonical["authority_surface"]["files"]
+    checked_files = surface.get("files") or {}
+    for path in sorted(set(canonical_files) | set(checked_files)):
+        if path not in checked_files:
+            problems.append(f"source binding: manifest omits {path} "
+                            f"(pinned by {source_commit[:12]})")
+        elif path not in canonical_files:
+            problems.append(f"source binding: manifest pins {path} which does not "
+                            f"exist in {source_commit[:12]}")
+        elif checked_files[path] != canonical_files[path]:
+            problems.append(
+                f"source binding: {path} hash does not match "
+                f"{source_commit[:12]} (manifest {checked_files[path][:19]}…, "
+                f"tree {canonical_files[path][:19]}…)"
+            )
+    return problems
+
+
 def verify_authority_surface(candidate: Path, manifest: dict) -> list[str]:
     """Return a list of authority-surface problems (empty == candidate OK).
 
@@ -518,6 +598,16 @@ def main() -> int:
         manifest, contract_problems = None, [
             f"authority manifest unreadable: {type(error).__name__}: {error}"
         ]
+
+    if isinstance(manifest, dict) and not contract_problems:
+        # P0d: the check context carries the manifest's source_commit — an
+        # authority upgrade changes the required context name itself, so
+        # verdicts from an older authority can never satisfy the new one.
+        global CHECK_NAME
+        CHECK_NAME = (
+            f"governance-root-authority/"
+            f"{manifest['authority_surface']['source_commit'][:7]}"
+        )
 
     if contract_problems:
         print("FAIL: authority manifest contract violation — sweep fails closed:")
