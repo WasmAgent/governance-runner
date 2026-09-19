@@ -48,16 +48,27 @@ the manifest: tampered, deleted, or unmanifested authority files ⇒
 `governance-root-authority` = HOLD. This closes both the "self-neutering
 workflow" hole and the "weaken the policy the checker reads" hole
 (e.g. `runtime_source_extensions: []`), while ordinary governed data
-(`docs/`, `claims/`, `evidence/`, `profile/`) remains free to change.
+(`docs/`, `evidence/`, `profile/`, and most of `claims/`) remains free
+to change — except explicitly manifested authority inputs such as
+`claims/claim-overreach-allowlist.json`.
 
 ### Judge-code upgrade runbook (two-phase, pin-first)
 
-1. Review the proposed `.github` workflow/scripts change.
+1. Review the proposed `.github` workflow/scripts/policy/schema change.
 2. Land the NEW expected hashes in `governance-runner` first:
    ```bash
-   python scripts/build-manifest.py /path/to/reviewed/.github-checkout \
+   python scripts/build-manifest.py /path/to/.github-repo \
        --source-commit <reviewed-sha> --output authority-manifest.json
    ```
-   open a PR here (self-test will run), merge.
+   The builder hashes the IMMUTABLE GIT TREE of `<reviewed-sha>` (`git
+   ls-tree`/`git show`) — never the working tree — so a wrong checkout, a
+   dirty tree, or a mismatched source_commit cannot poison the manifest:
+   the metadata is by construction the tree that was hashed. Open a PR here
+   (self-test will run, including the real-manifest contract check), merge.
 3. Then merge the `.github` change. PRs based on the older main will HOLD
    until they rebase — fail closed by design; the window is short.
+
+At sweep start the runner validates the checked-in manifest's contract
+(schema v2, required prefixes/exact_files, exact ⊆ files, paths within the
+surface, sha256 format, 40-hex source_commit); a violation fails the whole
+sweep closed and every open PR visibly HOLDs.

@@ -25,6 +25,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -80,6 +81,8 @@ MANIFEST_EXACT_FILES = (
     "golden-path/versions.lock.json",
     "claims/claim-overreach-allowlist.json",
 )
+MANIFEST_SOURCE_REPOSITORY = "WasmAgent/.github"
+_HEX40 = re.compile(r"^[0-9a-f]{40}$")
 
 
 def build_manifest(
@@ -109,6 +112,63 @@ def build_manifest(
             "files": files,
         }
     }
+
+
+def validate_manifest_contract(manifest: dict) -> list[str]:
+    """Validate the CHECKED-IN manifest's structural contract (P0c).
+
+    The sweeper refuses to run on a manifest that does not preserve the v2
+    closure: without this, a weakened checked-in manifest (dropped prefix,
+    unpinned exact file) would silently downgrade the runtime authority
+    while the self-test's synthetic manifest stayed green.
+    """
+    problems: list[str] = []
+
+    def fail(message: str) -> None:
+        problems.append(message)
+
+    if manifest.get("schema_version") != 2:
+        fail(f"schema_version must be 2, got {manifest.get('schema_version')!r}")
+
+    surface = manifest.get("authority_surface")
+    if not isinstance(surface, dict):
+        fail("authority_surface object missing")
+        return problems
+
+    if surface.get("source_repository") != MANIFEST_SOURCE_REPOSITORY:
+        fail(f"source_repository must be {MANIFEST_SOURCE_REPOSITORY!r}, "
+             f"got {surface.get('source_repository')!r}")
+
+    source_commit = surface.get("source_commit")
+    if not isinstance(source_commit, str) or not _HEX40.match(source_commit):
+        fail("source_commit must be a 40-character hex sha")
+
+    prefixes = surface.get("prefixes")
+    if list(prefixes or []) != list(MANIFEST_PREFIXES):
+        fail(f"prefixes must be exactly {list(MANIFEST_PREFIXES)}, got {prefixes!r}")
+
+    exact = surface.get("exact_files")
+    if list(exact or []) != list(MANIFEST_EXACT_FILES):
+        fail(f"exact_files must be exactly {list(MANIFEST_EXACT_FILES)}, got {exact!r}")
+
+    files = surface.get("files")
+    if not isinstance(files, dict) or not files:
+        fail("files must be a non-empty mapping of path -> sha256")
+        return problems
+
+    for path in sorted(exact or []):
+        if path not in files:
+            fail(f"exact_files declares {path!r} but files does not pin it")
+
+    for path in sorted(files):
+        value = files[path]
+        if not isinstance(value, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", value):
+            fail(f"files[{path!r}] must be 'sha256:<64 hex>'")
+        if not any(path.startswith(prefix) for prefix in MANIFEST_PREFIXES) \
+                and path not in MANIFEST_EXACT_FILES:
+            fail(f"files entry outside the authority surface: {path}")
+
+    return problems
 
 
 def verify_authority_surface(candidate: Path, manifest: dict) -> list[str]:
@@ -447,10 +507,39 @@ def publish_check(
 def main() -> int:
     load_environment()
 
-    if not MANIFEST_PATH.exists():
-        print(f"FAIL: authority manifest missing: {MANIFEST_PATH}")
+    # P0c: the checked-in manifest is itself a validated authority artifact.
+    # A contract violation fails the whole sweep closed (no PR is judged by a
+    # downgraded runtime authority) and every open PR visibly HOLDs.
+    open_prs = []
+    try:
+        manifest = json.loads(MANIFEST_PATH.read_text())
+        contract_problems = validate_manifest_contract(manifest)
+    except (OSError, json.JSONDecodeError) as error:
+        manifest, contract_problems = None, [
+            f"authority manifest unreadable: {type(error).__name__}: {error}"
+        ]
+
+    if contract_problems:
+        print("FAIL: authority manifest contract violation — sweep fails closed:")
+        for problem in contract_problems:
+            print(f"  - {problem}")
+        try:
+            for pr in list_open_prs():
+                try:
+                    publish_check(
+                        pr_number=int(pr["number"]),
+                        sha=pr["head"]["sha"],
+                        success=False,
+                        summary=(
+                            "Runner authority manifest contract violation — "
+                            "sweep failed closed.\n\n" + "\n".join(contract_problems)
+                        ),
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
         return 1
-    manifest = json.loads(MANIFEST_PATH.read_text())
 
     open_prs = list_open_prs()
 

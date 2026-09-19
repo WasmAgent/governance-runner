@@ -16,7 +16,13 @@ AND that the authority-surface manifest check behaves:
   7. tampered judge POLICY (policies/*.yml) is rejected;
   8. tampered normative SCHEMA (schemas/*.json) is rejected;
   9. tampered pinned exact file (golden-path/versions.lock.json) is rejected;
- 10. ordinary governed data (docs/, claims/) may still change freely.
+ 10. ordinary governed data (docs/, claims/) may still change freely;
+ 11. the CHECKED-IN authority-manifest.json satisfies the runtime contract
+     (schema v2, required prefixes/exact_files, exact⊆files, paths within
+     surface, sha256 format, 40-hex source_commit);
+ 12. a manifest that drops a required prefix fails the contract;
+ 13. a manifest that unpins an exact_files entry from files fails the
+     contract (both the keep-exact_files and drop-everywhere variants).
 
 The fixture is built programmatically so the test cannot drift from the
 validator contract.
@@ -226,6 +232,53 @@ def main() -> int:
             print(f"FAIL tampered exact authority file not detected:\n{problems}")
             return 1
         print("PASS authority surface: tampered versions.lock rejected")
+
+    # --- checked-in manifest contract (P0c): the REAL artifact is tested,
+    # not only synthetic manifests built by build_manifest() ---
+    import copy
+    import json
+
+    real = json.loads((ROOT / "authority-manifest.json").read_text())
+    problems = sweep.validate_manifest_contract(real)
+    if problems:
+        print(f"FAIL checked-in manifest violates its contract:\n{problems}")
+        return 1
+    print("PASS real authority-manifest.json satisfies the runtime contract")
+
+    mutated = copy.deepcopy(real)
+    mutated["authority_surface"]["prefixes"] = [
+        p for p in mutated["authority_surface"]["prefixes"] if p != "policies/"
+    ]
+    problems = sweep.validate_manifest_contract(mutated)
+    if not any("prefixes" in p for p in problems):
+        print(f"FAIL dropped required prefix not caught:\n{problems}")
+        return 1
+    print("PASS contract: dropped required prefix rejected")
+
+    mutated = copy.deepcopy(real)
+    del mutated["authority_surface"]["files"]["golden-path/versions.lock.json"]
+    problems = sweep.validate_manifest_contract(mutated)
+    if not any("exact_files declares" in p for p in problems):
+        print(f"FAIL unpinned exact file (exact_files kept) not caught:\n{problems}")
+        return 1
+    print("PASS contract: unpinned exact_files entry rejected")
+
+    mutated = copy.deepcopy(real)
+    del mutated["authority_surface"]["files"]["golden-path/versions.lock.json"]
+    mutated["authority_surface"]["exact_files"] = [
+        e for e in mutated["authority_surface"]["exact_files"]
+        if e != "golden-path/versions.lock.json"
+    ]
+    problems = sweep.validate_manifest_contract(mutated)
+    # rejected either as an exact_files list mismatch or as a files entry
+    # outside the authority surface — both are contract violations.
+    if not problems or not any(
+        "outside the authority surface" in p or "exact_files must be exactly" in p
+        for p in problems
+    ):
+        print(f"FAIL fully-dropped exact file not caught:\n{problems}")
+        return 1
+    print("PASS contract: fully-dropped exact file rejected (outside surface)")
 
     return 0
 
