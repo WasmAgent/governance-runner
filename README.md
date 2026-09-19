@@ -30,3 +30,25 @@ owner account (telleroutlook) + governance-runner/main + App private key
         = the judge
 candidate PR content = the judged (data only)
 ```
+
+## Authority surface manifest
+
+`authority-manifest.json` pins the SHA-256 of every file in the candidate's
+judge code (`.github/workflows/**` and `scripts/**`) at an accepted
+`WasmAgent/.github` revision. Before any claim/evidence validation, the
+sweeper verifies the candidate's authority surface against the manifest:
+tampered, deleted, or unmanifested judge code ⇒ `governance-root-authority`
+= HOLD. This closes the "self-neutering workflow" hole: a candidate can no
+longer weaken its own required checks and still pass the root check.
+
+### Judge-code upgrade runbook (two-phase, pin-first)
+
+1. Review the proposed `.github` workflow/scripts change.
+2. Land the NEW expected hashes in `governance-runner` first:
+   ```bash
+   python scripts/build-manifest.py /path/to/reviewed/.github-checkout \
+       --source-commit <reviewed-sha> --output authority-manifest.json
+   ```
+   open a PR here (self-test will run), merge.
+3. Then merge the `.github` change. PRs based on the older main will HOLD
+   until they rebase — fail closed by design; the window is short.

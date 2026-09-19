@@ -1,19 +1,25 @@
 #!/usr/bin/env python3
 """Out-of-band governance sweep for WasmAgent/.github open PRs.
 
-For every open PR: download the candidate tarball, run the vendored trusted
-validators against it as DATA ONLY, re-verify the PR head (TOCTOU guard),
-then publish a check run as the governance GitHub App.
+For every open PR: download the candidate tarball, verify the candidate's
+AUTHORITY SURFACE against this repository's manifest (judge code may not be
+changed by a candidate), run the vendored trusted validators against the
+candidate as DATA ONLY, re-verify the PR head (TOCTOU guard), then publish a
+check run as the governance GitHub App.
 
 Security properties:
   - never executes candidate shell, workflows, or Python
   - never imports candidate code; validators come from this repository
+  - candidate cannot alter the judge code its PR is judged with:
+    ".github/workflows/**" and "scripts/**" must hash-match
+    authority-manifest.json (two-phase upgrade: manifest first, candidate second)
   - the App token held here can only read the candidate and write checks
   - infrastructure failures publish a failure check (fail closed)
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -27,26 +33,102 @@ from urllib.request import Request, urlopen
 
 
 ROOT = Path(__file__).resolve().parents[1]
-
-TOKEN = os.environ["GH_TOKEN"]
-APP_ID = int(os.environ["GOVERNANCE_APP_ID"])
-TARGET_REPO = os.environ.get("TARGET_REPO", "WasmAgent/.github")
-CHECK_NAME = os.environ.get(
-    "CHECK_NAME",
-    "governance-root-authority",
-)
-
-API = os.environ["GITHUB_API_URL"].rstrip("/")
-SERVER = os.environ["GITHUB_SERVER_URL"].rstrip("/")
-RUNNER_REPO = os.environ["RUNNER_REPOSITORY"]
-RUNNER_SHA = os.environ["RUNNER_SHA"]
-RUN_ID = os.environ["RUN_ID"]
-
-DETAILS_URL = (
-    f"{SERVER}/{RUNNER_REPO}/actions/runs/{RUN_ID}"
-)
-
+MANIFEST_PATH = ROOT / "authority-manifest.json"
 API_VERSION = "2022-11-28"
+
+# Populated from the environment in main(); importable without env for tests.
+TOKEN = ""
+APP_ID = 0
+TARGET_REPO = "WasmAgent/.github"
+CHECK_NAME = "governance-root-authority"
+API = "https://api.github.com"
+SERVER = "https://github.com"
+RUNNER_REPO = ""
+RUNNER_SHA = ""
+RUN_ID = ""
+DETAILS_URL = ""
+
+
+def load_environment() -> None:
+    global TOKEN, APP_ID, TARGET_REPO, CHECK_NAME, API, SERVER
+    global RUNNER_REPO, RUNNER_SHA, RUN_ID, DETAILS_URL
+    TOKEN = os.environ["GH_TOKEN"]
+    APP_ID = int(os.environ["GOVERNANCE_APP_ID"])
+    TARGET_REPO = os.environ.get("TARGET_REPO", TARGET_REPO)
+    CHECK_NAME = os.environ.get("CHECK_NAME", CHECK_NAME)
+    API = os.environ["GITHUB_API_URL"].rstrip("/")
+    SERVER = os.environ["GITHUB_SERVER_URL"].rstrip("/")
+    RUNNER_REPO = os.environ["RUNNER_REPOSITORY"]
+    RUNNER_SHA = os.environ["RUNNER_SHA"]
+    RUN_ID = os.environ["RUN_ID"]
+    DETAILS_URL = f"{SERVER}/{RUNNER_REPO}/actions/runs/{RUN_ID}"
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
+
+
+MANIFEST_PREFIXES = (".github/workflows/", "scripts/")
+
+
+def build_manifest(tree: Path, source_commit: str, prefixes: tuple[str, ...] = MANIFEST_PREFIXES) -> dict:
+    """Same contract as scripts/build-manifest.py — shared by the self-test."""
+    files: dict[str, str] = {}
+    for prefix in prefixes:
+        base = tree / prefix
+        for path in sorted(base.rglob("*")):
+            if path.is_file():
+                rel = path.relative_to(tree).as_posix()
+                files[rel] = sha256_file(path)
+    return {
+        "authority_surface": {
+            "source_commit": source_commit,
+            "prefixes": list(prefixes),
+            "files": files,
+        }
+    }
+
+
+def verify_authority_surface(candidate: Path, manifest: dict) -> list[str]:
+    """Return a list of authority-surface problems (empty == candidate OK).
+
+    Every file the manifest knows must exist in the candidate with the exact
+    manifest hash; every file the candidate carries under the manifest's
+    prefixes must be present in the manifest (no unmanifested judge code).
+    """
+    surface = manifest["authority_surface"]
+    prefixes = tuple(surface["prefixes"])
+    expected: dict[str, str] = surface["files"]
+    problems: list[str] = []
+
+    seen: set[str] = set()
+    for prefix in prefixes:
+        base = candidate / prefix
+        if not base.is_dir():
+            problems.append(f"missing authority directory: {prefix}")
+            continue
+        for path in sorted(base.rglob("*")):
+            if path.is_file():
+                rel = path.relative_to(candidate).as_posix()
+                seen.add(rel)
+
+    for path in sorted(expected):
+        if path not in seen:
+            problems.append(f"missing authority file: {path}")
+        elif sha256_file(candidate / path) != expected[path]:
+            problems.append(
+                f"authority file differs from manifest: {path} "
+                f"(expected {expected[path][:19]}…, got {sha256_file(candidate / path)[:19]}…)"
+            )
+
+    for rel in sorted(seen):
+        if rel not in expected:
+            problems.append(f"unmanifested authority file: {rel}")
+    return problems
 
 
 def api_bytes(
@@ -194,7 +276,10 @@ def run_validator(
 
 def validate_candidate(
     candidate: Path,
+    manifest: dict,
 ) -> tuple[bool, str]:
+    problems = verify_authority_surface(candidate, manifest)
+
     validators = [
         ROOT
         / "validators"
@@ -204,8 +289,18 @@ def validate_candidate(
         / "validate-public-claims.py",
     ]
 
-    success = True
+    success = not problems
     output: list[str] = []
+
+    if problems:
+        output.append(
+            "## authority surface\n"
+            "exit=1\n\n"
+            "FAIL — candidate judge code does not match authority-manifest.json.\n"
+            "A legitimate judge-code change lands in governance-runner FIRST\n"
+            "(update authority-manifest.json via PR), then the candidate change.\n\n"
+            + "\n".join(f"- {problem}" for problem in problems)
+        )
 
     for validator in validators:
         code, text = run_validator(
@@ -331,6 +426,13 @@ def publish_check(
 
 
 def main() -> int:
+    load_environment()
+
+    if not MANIFEST_PATH.exists():
+        print(f"FAIL: authority manifest missing: {MANIFEST_PATH}")
+        return 1
+    manifest = json.loads(MANIFEST_PATH.read_text())
+
     open_prs = list_open_prs()
 
     if not open_prs:
@@ -356,7 +458,8 @@ def main() -> int:
                 )
 
                 success, summary = validate_candidate(
-                    candidate
+                    candidate,
+                    manifest,
                 )
 
             # TOCTOU guard:
