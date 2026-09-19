@@ -71,4 +71,24 @@ to change — except explicitly manifested authority inputs such as
 At sweep start the runner validates the checked-in manifest's contract
 (schema v2, required prefixes/exact_files, exact ⊆ files, paths within the
 surface, sha256 format, 40-hex source_commit); a violation fails the whole
-sweep closed and every open PR visibly HOLDs.
+sweep closed and every open PR visibly HOLDs. The self-test additionally
+proves SOURCE BINDING: the checked-in manifest is rebuilt from its
+`source_commit`'s immutable git tree and must match exactly — a
+structurally-valid hash swap (source_commit kept) fails the binding.
+
+## Authority epoch (P0d)
+
+The check context carries the manifest's source_commit:
+
+```text
+governance-root-authority/<manifest-source-commit[:7]>
+```
+
+Any authority upgrade (any manifest change) therefore automatically changes
+the required context name: verdicts produced by an older authority can
+never satisfy the new epoch, closing the "old green check survives an
+authority upgrade" race. The one manual step per upgrade is the protection
+flip in `WasmAgent/.github` main protection — replace
+`governance-root-authority/<old>` with `governance-root-authority/<new>`
+(both app_id-bound to the Governance App) after the runner PR merges and
+before relying on the new authority.
