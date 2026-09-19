@@ -49,10 +49,6 @@ def main() -> int:
 
     tree = args.tree.resolve()
     source_commit = args.source_commit
-    if source_commit is None:
-        source_commit = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=tree, capture_output=True, text=True, check=True
-        ).stdout.strip()
 
     manifest = build_manifest_from_git(tree, source_commit)
     rendered = json.dumps(manifest, indent=2, sort_keys=True) + "\n"

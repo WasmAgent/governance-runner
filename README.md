@@ -76,19 +76,27 @@ proves SOURCE BINDING: the checked-in manifest is rebuilt from its
 `source_commit`'s immutable git tree and must match exactly — a
 structurally-valid hash swap (source_commit kept) fails the binding.
 
-## Authority epoch (P0d)
+## Authority epoch (P0d) & production source binding (P0c4)
 
-The check context carries the manifest's source_commit:
+The check context carries the GOVERNANCE-RUNNER authority revision — the
+actual judge — as a full 40-hex SHA:
 
 ```text
-governance-root-authority/<manifest-source-commit[:7]>
+governance-root-authority/<runner-main-commit-sha>
 ```
 
-Any authority upgrade (any manifest change) therefore automatically changes
-the required context name: verdicts produced by an older authority can
-never satisfy the new epoch, closing the "old green check survives an
-authority upgrade" race. The one manual step per upgrade is the protection
-flip in `WasmAgent/.github` main protection — replace
-`governance-root-authority/<old>` with `governance-root-authority/<new>`
-(both app_id-bound to the Governance App) after the runner PR merges and
-before relying on the new authority.
+Any runner change (validators, sweeper, manifest, workflow) automatically
+changes the emitted context name: a green verdict produced by an older
+authority can never satisfy the new epoch. The one manual step per upgrade
+is the protection flip in `WasmAgent/.github` main protection — replace
+`governance-root-authority/<old-runner-sha>` with
+`governance-root-authority/<new-runner-sha>` (both app_id-bound to the
+Governance App) after the runner PR merges and before relying on the new
+authority.
+
+At sweep start the runner ALSO enforces the production source binding: it
+clones the canonical `WasmAgent/.github` git object database (workflow
+step), rebuilds the manifest from `source_commit`'s immutable tree, and
+requires a byte-exact match with the checked-in manifest. Unverifiable
+binding or any mismatch fails the sweep closed with visible HOLDs — the
+source-binding check can never be skipped in production.

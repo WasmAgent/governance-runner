@@ -22,7 +22,16 @@ AND that the authority-surface manifest check behaves:
      surface, sha256 format, 40-hex source_commit);
  12. a manifest that drops a required prefix fails the contract;
  13. a manifest that unpins an exact_files entry from files fails the
-     contract (both the keep-exact_files and drop-everywhere variants).
+     contract (both the keep-exact_files and drop-everywhere variants);
+ 14. the checked-in manifest is byte-canonically bound to its
+     source_commit: rebuilding from the .github git tree reproduces it
+     exactly (P0c4 — enforced, never skipped);
+ 15. a manifest with one valid-format hash swapped (source_commit kept)
+     passes the structural contract but FAILS the source binding.
+
+16 PASS assertions cover these 15 obligations (obligation 13 has two
+mutation variants). Unverifiable source binding is a FAILURE, not a skip:
+the authority chain must be fail-closed end to end.
 
 The fixture is built programmatically so the test cannot drift from the
 validator contract.
@@ -295,8 +304,9 @@ def main() -> int:
             capture_output=True, text=True, timeout=120,
         )
         if clone.returncode != 0:
-            print(f"SKIP source binding: cannot clone target ({clone.stderr.strip()[:120]})")
-            return 0
+            print(f"FAIL source binding unverifiable: cannot clone target "
+                  f"({clone.stderr.strip()[:120]})")
+            return 1
         # default clone carries main history; ensure the pinned commit exists
         sha = real["authority_surface"]["source_commit"]
         if subprocess.run(["git", "-C", str(target_repo), "cat-file", "-e", f"{sha}^{{commit}}"],
@@ -304,8 +314,9 @@ def main() -> int:
             fetch = subprocess.run(["git", "-C", str(target_repo), "fetch", "--quiet",
                                     "origin", sha], capture_output=True, text=True)
             if fetch.returncode != 0:
-                print(f"SKIP source binding: pinned commit unreachable ({fetch.stderr.strip()[:120]})")
-                return 0
+                print(f"FAIL source binding unverifiable: pinned commit unreachable "
+                      f"({fetch.stderr.strip()[:120]})")
+                return 1
 
     problems = sweep.verify_manifest_source_binding(real, target_repo)
     if problems:

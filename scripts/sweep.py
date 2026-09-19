@@ -56,6 +56,7 @@ DETAILS_URL = ""
 def load_environment() -> None:
     global TOKEN, APP_ID, TARGET_REPO, CHECK_NAME, API, SERVER
     global RUNNER_REPO, RUNNER_SHA, RUN_ID, DETAILS_URL
+    global CHECK_NAME
     TOKEN = os.environ["GH_TOKEN"]
     APP_ID = int(os.environ["GOVERNANCE_APP_ID"])
     TARGET_REPO = os.environ.get("TARGET_REPO", TARGET_REPO)
@@ -66,6 +67,11 @@ def load_environment() -> None:
     RUNNER_SHA = os.environ["RUNNER_SHA"]
     RUN_ID = os.environ["RUN_ID"]
     DETAILS_URL = f"{SERVER}/{RUNNER_REPO}/actions/runs/{RUN_ID}"
+    # P0d2: the epoch basis is the GOVERNANCE-RUNNER authority revision (the
+    # actual judge) — full 40-hex. Any runner change (validators, sweeper,
+    # manifest, workflow) changes the emitted check context, so verdicts
+    # from an older authority can never satisfy the new one.
+    CHECK_NAME = f"governance-root-authority/{RUNNER_SHA}"
 
 
 def sha256_file(path: Path) -> str:
@@ -599,16 +605,6 @@ def main() -> int:
             f"authority manifest unreadable: {type(error).__name__}: {error}"
         ]
 
-    if isinstance(manifest, dict) and not contract_problems:
-        # P0d: the check context carries the manifest's source_commit — an
-        # authority upgrade changes the required context name itself, so
-        # verdicts from an older authority can never satisfy the new one.
-        global CHECK_NAME
-        CHECK_NAME = (
-            f"governance-root-authority/"
-            f"{manifest['authority_surface']['source_commit'][:7]}"
-        )
-
     if contract_problems:
         print("FAIL: authority manifest contract violation — sweep fails closed:")
         for problem in contract_problems:
@@ -623,6 +619,46 @@ def main() -> int:
                         summary=(
                             "Runner authority manifest contract violation — "
                             "sweep failed closed.\n\n" + "\n".join(contract_problems)
+                        ),
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return 1
+
+    # P0c4: production source binding — the checked-in manifest must equal
+    # the canonical manifest rebuilt from its source_commit's git tree.
+    # Unverifiable binding fails closed (visible HOLDs, no PR is judged).
+    target_checkout = os.environ.get("GOVERNANCE_TARGET_CHECKOUT", "")
+    if not target_checkout or not Path(target_checkout).is_dir():
+        binding_problems = [
+            "source binding unverifiable: GOVERNANCE_TARGET_CHECKOUT (a git "
+            "object database of WasmAgent/.github) was not provided — "
+            "refusing to judge on an unpinned authority"
+        ]
+    else:
+        try:
+            binding_problems = verify_manifest_source_binding(
+                manifest, Path(target_checkout)
+            )
+        except RuntimeError as error:
+            binding_problems = [f"source binding unverifiable: {error}"]
+
+    if binding_problems:
+        print("FAIL: manifest is not bound to its source_commit — sweep fails closed:")
+        for problem in binding_problems:
+            print(f"  - {problem}")
+        try:
+            for pr in list_open_prs():
+                try:
+                    publish_check(
+                        pr_number=int(pr["number"]),
+                        sha=pr["head"]["sha"],
+                        success=False,
+                        summary=(
+                            "Manifest source-binding failure — sweep failed "
+                            "closed.\n\n" + "\n".join(binding_problems)
                         ),
                     )
                 except Exception:
